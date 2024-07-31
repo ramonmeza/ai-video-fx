@@ -10,10 +10,11 @@ I wanted to learn about using AI models and found a few depth models that produc
 ### Run UI
 The front-end UI was developed using React and Next.js. The UI will run on `localhost:3000` by default.
 
-Note: `API_URL` is defined as a constant in `app\page.js`. If you want to run the API on a different port or with a different URL, modify the value for `API_URL`. This will change eventually.
+Note: `API_URL` is defined as a constant in `app\page.js`. If you want to run the API on a different port or with a different URL, modify the value for `API_URL`. This will eventually change to building the static site using Next.js SSG.
 
 ```
 npx next dev
+// npx next build
 ```
 
 ### Run API
