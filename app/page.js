@@ -25,12 +25,12 @@ export default function Home() {
 
     const form = document.getElementById("UploadForm");
     const formData = new FormData(form);
-    console.log(formData);
     setSubmittingForm(true);
     const response = await fetch(`${API_URL}/generate?model=${formData.get("model")}`, {
       method: "POST",
       body: formData
     });
+    console.log(response);
     setSubmittingForm(false);
   }
 
