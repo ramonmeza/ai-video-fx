@@ -6,9 +6,17 @@ from PIL import Image
 from transformers import pipeline
 from tempfile import NamedTemporaryFile
 
+import asyncio
 import cv2 as cv
 import numpy as np
 import os
+
+
+# constants
+SUPPORTED_MODELS = [
+    "LiheYoung/depth-anything-small-hf"
+    # "prs-eth/marigold-depth-v1-0",
+]
 
 # initialization
 app = FastAPI()
@@ -29,17 +37,12 @@ app.add_middleware(
 
 
 # functions
-def image_to_bytes(image: Image):
-    image_bytes = BytesIO()
-    image.save(image_bytes, format="JPEG", quality=85)
-    image_bytes.seek(0)
-    yield from image_bytes
+def temp_video_to_bytes(vid_file: str, delete_after: bool = True):
+    with open(vid_file, "rb") as fp:
+        yield from fp
 
-
-def video_to_bytes(vid_file):
-    vid_file = NamedTemporaryFile()
-    vid_file.seek(0)
-    yield from vid_file
+    if delete_after:
+        os.remove(vid_file)
 
 
 def get_frames(video: cv.VideoCapture):
@@ -60,79 +63,77 @@ async def get_info():
 
 @app.get("/models")
 async def get_models():
-    return {
-        "models": [
-            "LiheYoung/depth-anything-small-hf",
-            # "prs-eth/marigold-depth-v1-0",
-        ]
-    }
+    return {"models": SUPPORTED_MODELS}
 
 
 @app.post("/generate")
 async def post_generate(model: str, file: UploadFile):
-    temp_vid = NamedTemporaryFile(delete=False)
-    temp_output_vid = NamedTemporaryFile(delete=False)
-
     try:
-        # load video file
-        # for each frame (as a coroutine?)
-        #   apply model to frame
-        #
-        # print("Reading file...", end="")
-        # content = await file.read()
-        # print("Done")
+        # create temp files to store the uploaded file and the resulting output file
+        temp_upload = NamedTemporaryFile(delete=False, delete_on_close=False)
+        temp_output = NamedTemporaryFile(
+            suffix=".avi", delete=False, delete_on_close=False
+        )
+        temp_output.close()  # close immediately since opencv will open this with the writer
 
-        print("Creating pipeline...", end="")
-        pipe = pipeline(task="depth-estimation", model=model)
-        print("Done")
+        print(temp_upload.name)
+        print(temp_output.name)
 
-        print("Loading video...", end="")
-        contents = await file.read()
-        temp_vid.write(contents)
-        cvvideo = cv.VideoCapture(temp_vid.name)
+        # open the uploaded file as a video using opencv
+        uploaded_content = await file.read()
+        temp_upload.write(uploaded_content)
+        temp_upload.close()
 
-        width = int(cvvideo.get(cv.CAP_PROP_FRAME_WIDTH))
-        height = int(cvvideo.get(cv.CAP_PROP_FRAME_HEIGHT))
-        fps = int(cvvideo.get(cv.CAP_PROP_FPS))
+        cv_video = cv.VideoCapture(temp_upload.name)
 
-        fourcc = cv.VideoWriter_fourcc(*"XVID")
-        output_video = cv.VideoWriter(
-            "D:\\code\\ai\\ai-video-fx\\videos\\result.avi",
-            fourcc,
+        # create the video writer
+        width = int(cv_video.get(cv.CAP_PROP_FRAME_WIDTH))
+        height = int(cv_video.get(cv.CAP_PROP_FRAME_HEIGHT))
+        fps = int(cv_video.get(cv.CAP_PROP_FPS))
+        output_writer = cv.VideoWriter(
+            temp_output.name,
+            cv.VideoWriter_fourcc(*"XVID"),
             fps,
             (width, height),
         )
-        print("Done")
 
+        # load the model
+        if model == SUPPORTED_MODELS[0]:
+            pipe = pipeline(task="depth-estimation", model=model)
+        else:
+            raise Exception("Unsupported model selected!")
+
+        # iterate over each frame of the video
         print("Processing frames...")
         current_frame = 1
-        max_frames = int(cvvideo.get(cv.CAP_PROP_FRAME_COUNT))
-        for frame in get_frames(cvvideo):
+        max_frames = int(cv_video.get(cv.CAP_PROP_FRAME_COUNT))
+        for frame in get_frames(cv_video):
             print(f"...{current_frame}/{max_frames}")
             current_frame += 1
 
-            # load frame as PIL image
-            cvimg = cv.cvtColor(frame, cv.COLOR_BGR2RGB)
-            frame = Image.fromarray(cvimg)
+            # load frame as PIL image so we can run it through the model
+            pil_frame = Image.fromarray(cv.cvtColor(frame, cv.COLOR_BGR2RGB))
 
             # apply model to frame
-            result = pipe(frame)["depth"]
-            cvresult = np.array(result.convert("RGB"))
+            result = pipe(pil_frame)["depth"]
+            cv_result = np.array(result.convert("RGB"))
 
             # save result to videofile
-            output_video.write(cvresult)
+            output_writer.write(cv_result)
         print("Done")
 
-        cvvideo.release()
-        output_video.release()
+        cv_video.release()
+        output_writer.release()
 
-        return {"path": "D:\\code\\ai\\ai-video-fx\\videos\\result.avi"}
-
-        # return StreamingResponse(
-        #     video_to_bytes(temp_output_vid), media_type="video/x-msvideo"
-        # )
+        file_size = os.path.getsize(temp_output.name)
+        return StreamingResponse(
+            temp_video_to_bytes(temp_output.name, delete_after=False),
+            media_type="video/x-msvideo",
+        )
+    except KeyboardInterrupt:
+        print("Cancelling!")
+        raise HTTPException(status_code=500, detail="Server aborted operation")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     finally:
-        os.remove(temp_vid.name)
-        os.remove(temp_output_vid.name)
+        os.remove(temp_upload.name)
