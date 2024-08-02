@@ -1,22 +1,28 @@
+from diffusers import (
+    StableDiffusionInstructPix2PixPipeline,
+    EulerAncestralDiscreteScheduler,
+)
 from fastapi import FastAPI, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from io import BytesIO
 from PIL import Image
 from transformers import pipeline
 from tempfile import NamedTemporaryFile
+from typing import Optional
 
-import asyncio
 import cv2 as cv
 import numpy as np
 import os
+import torch
 
 
 # constants
 SUPPORTED_MODELS = [
-    "LiheYoung/depth-anything-small-hf"
+    "LiheYoung/depth-anything-small-hf",
+    "AnalogMutations/instruct-pix2pix",
     # "prs-eth/marigold-depth-v1-0",
 ]
+
 
 # initialization
 app = FastAPI()
@@ -67,7 +73,12 @@ async def get_models():
 
 
 @app.post("/generate")
-async def post_generate(model: str, file: UploadFile):
+async def post_generate(
+    model: str,
+    file: UploadFile,
+    prompt: Optional[str] = "turn him into a cyborg",
+    guidance: Optional[float] = 1.0,
+):
     try:
         # create temp files to store the uploaded file and the resulting output file
         temp_upload = NamedTemporaryFile(delete=False, delete_on_close=False)
@@ -100,8 +111,17 @@ async def post_generate(model: str, file: UploadFile):
         # load the model
         if model == SUPPORTED_MODELS[0]:
             pipe = pipeline(task="depth-estimation", model=model)
+        elif model == SUPPORTED_MODELS[1]:
+            pipe = StableDiffusionInstructPix2PixPipeline.from_pretrained(
+                model, torch_dtype=torch.float16, safety_checker=None
+            )
         else:
             raise Exception("Unsupported model selected!")
+
+        pipe = pipe.to("cuda" if torch.cuda.is_available() else "cpu")
+        pipe.scheduler = EulerAncestralDiscreteScheduler.from_config(
+            pipe.scheduler.config
+        )
 
         # iterate over each frame of the video
         print("Processing frames...")
@@ -115,7 +135,16 @@ async def post_generate(model: str, file: UploadFile):
             pil_frame = Image.fromarray(cv.cvtColor(frame, cv.COLOR_BGR2RGB))
 
             # apply model to frame
-            result = pipe(pil_frame)["depth"]
+            if model == SUPPORTED_MODELS[0]:
+                result = pipe(pil_frame)["depth"]
+            elif model == SUPPORTED_MODELS[1]:
+                result = pipe(
+                    prompt,
+                    image=pil_frame,
+                    num_inference_steps=10,
+                    image_guidance_scale=guidance,
+                ).images[0]
+
             cv_result = np.array(result.convert("RGB"))
 
             # save result to videofile
