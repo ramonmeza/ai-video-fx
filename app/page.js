@@ -2,12 +2,16 @@
 
 import React, { useState, useEffect } from "react";
 import Spinner from "./spinner";
+import Slider from "./slider";
 
 const API_URL = "http://localhost:8000"
 
 export default function Home() {
   const [models, setModels] = useState(null);
+  const [selectedModel, setSelectedModel] = useState(null);
   const [result, setResult] = useState(null);
+  const [resultMimeType, setResultMimeType] = useState(null);
+  const [resultFilename, setResultFilename] = useState(null);
   const [submittingForm, setSubmittingForm] = useState(false);
 
   useEffect(() => {
@@ -28,9 +32,23 @@ export default function Home() {
 
     const form = document.getElementById("uploadForm");
     const formData = new FormData(form);
-    setSubmittingForm(true);
 
-    const response = await fetch(`${API_URL}/generate?model=${formData.get("model")}`, {
+    setSubmittingForm(true);
+    setResult(null);
+    setResultMimeType(null);
+    setResultFilename(null);
+
+    const model = formData.get("model");
+    const prompt = formData.get("prompt");
+    const guidance = formData.get("guidance");
+    const num_inference_steps = formData.get("num_inference_steps");
+
+    const urlparams = `model=${model}` +
+      (prompt ? `&prompt=${prompt}` : "") +
+      (guidance ? `&guidance=${guidance}` : "") +
+      (num_inference_steps ? `&num_inference_steps=${num_inference_steps}` : "");
+
+    const response = await fetch(`${API_URL}/generate?${urlparams}`, {
       method: "POST",
       body: formData
     }).catch(error => console.error(error));
@@ -38,14 +56,13 @@ export default function Home() {
     if (response.ok) {
       const blob = await response.blob();
       const url = window.URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = "temp.avi";
-      document.body.appendChild(a);
-      a.click(); //autodownloads
-      a.remove();
-      window.URL.revokeObjectURL(url);
+      setResult(url);
+      setResultMimeType(response.headers.get("content-type"));
+      // setResultFilename(response.headers.get("filename"));
+      setResultFilename("result.mp4");
+
     } else {
+      setResult(null);
       console.error("Failed to download file");
     }
 
@@ -71,7 +88,7 @@ export default function Home() {
 
             <div>
               <label htmlFor="model" className="text-xl block mb-2">Select a model: </label>
-              <select className="form-select min-w-full" id="model" name="model">
+              <select className="form-select min-w-full" id="model" name="model" onChange={() => { setSelectedModel(document.getElementById("model").value); }}>
                 {
                   models ? models.map((model, index) => {
                     return (
@@ -83,6 +100,34 @@ export default function Home() {
                 }
               </select>
             </div>
+
+            {
+              selectedModel == "AnalogMutations/instruct-pix2pix" ?
+                <>
+                  <div>
+                    <label htmlFor="prompt" className="text-xl block mb-2">Prompt</label>
+                    <input type="text" id="prompt" name="prompt" placeholder="Turn him into a cyborg"></input>
+                  </div>
+                  <div>
+                    <label htmlFor="guidance" className="text-xl block mb-2">Guidance</label>
+                    <Slider id="guidance" name="guidance" minValue={5} maxValue={15} defaultValue={8} step={1} className="slider" />
+                  </div>
+                  <div>
+                    <label htmlFor="num_inference_steps" className="text-xl block mb-2">Number of Interence Steps</label>
+                    <Slider id="num_inference_steps" name="num_inference_steps" minValue={1} maxValue={30} defaultValue={15} step={1} className="slider" />
+                  </div>
+                </>
+                :
+                selectedModel == "lambdalabs/sd-image-variations-diffusers" ?
+                  <>
+                    <div>
+                      <label htmlFor="guidance" className="text-xl block mb-2">Guidance</label>
+                      <Slider id="guidance" name="guidance" minValue={5} maxValue={15} defaultValue={8} step={1} className="slider" />
+                    </div>
+                  </>
+                  :
+                  <></>
+            }
 
             <div>
               {
@@ -100,9 +145,10 @@ export default function Home() {
         {
           result ?
             <div>
-              <video>
-                <source src="" />
+              <video controls preload="true" loop={true}>
+                <source src={result} type={resultMimeType} />
               </video>
+              <a href={result} download={resultFilename} className="block px-3 py-1 text-white rounded-sm bg-sky-700 hover:bg-sky-400">Download</a>
             </div>
             :
             <div className="text-center">

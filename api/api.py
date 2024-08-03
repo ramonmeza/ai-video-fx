@@ -1,27 +1,35 @@
 from diffusers import (
     StableDiffusionInstructPix2PixPipeline,
+    StableDiffusionImageVariationPipeline,
     EulerAncestralDiscreteScheduler,
 )
 from fastapi import FastAPI, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from PIL import Image
 from transformers import pipeline
 from tempfile import NamedTemporaryFile
 from typing import Optional
 
+import asyncio
 import cv2 as cv
 import numpy as np
 import os
 import torch
+from torchvision import transforms
 
 
 # constants
 SUPPORTED_MODELS = [
     "LiheYoung/depth-anything-small-hf",
     "AnalogMutations/instruct-pix2pix",
+    "lambdalabs/sd-image-variations-diffusers",
     # "prs-eth/marigold-depth-v1-0",
 ]
+
+CODECC: str = "X264"
+CODECC_SUFFIX: str = ".mp4"
+CODECC_MEDIATYPE: str = "video/mp4"
 
 
 # initialization
@@ -51,6 +59,17 @@ def temp_video_to_bytes(vid_file: str, delete_after: bool = True):
         os.remove(vid_file)
 
 
+async def remove_file(file_path):
+    while True:
+        try:
+            await asyncio.sleep(5)
+            os.remove(file_path)
+            print(f"File {file_path} has been deleted.")
+            break
+        except:
+            pass
+
+
 def get_frames(video: cv.VideoCapture):
     while video.isOpened():
         ret, frame = video.read()
@@ -77,13 +96,23 @@ async def post_generate(
     model: str,
     file: UploadFile,
     prompt: Optional[str] = "turn him into a cyborg",
-    guidance: Optional[float] = 1.0,
+    guidance: Optional[float] = 7,
+    num_inference_steps: Optional[int] = 10,
 ):
     try:
+        print(
+            {
+                "model": model,
+                "prompt": prompt,
+                "guidance": guidance,
+                "num_inference_steps": num_inference_steps,
+            }
+        )
+
         # create temp files to store the uploaded file and the resulting output file
         temp_upload = NamedTemporaryFile(delete=False, delete_on_close=False)
         temp_output = NamedTemporaryFile(
-            suffix=".avi", delete=False, delete_on_close=False
+            suffix=CODECC_SUFFIX, delete=False, delete_on_close=False
         )
         temp_output.close()  # close immediately since opencv will open this with the writer
 
@@ -103,25 +132,29 @@ async def post_generate(
         fps = int(cv_video.get(cv.CAP_PROP_FPS))
         output_writer = cv.VideoWriter(
             temp_output.name,
-            cv.VideoWriter_fourcc(*"XVID"),
+            cv.VideoWriter_fourcc(*CODECC),
             fps,
             (width, height),
         )
 
         # load the model
-        if model == SUPPORTED_MODELS[0]:
-            pipe = pipeline(task="depth-estimation", model=model)
-        elif model == SUPPORTED_MODELS[1]:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        if model == "LiheYoung/depth-anything-small-hf":
+            pipe = pipeline(device=device, task="depth-estimation", model=model)
+        elif model == "AnalogMutations/instruct-pix2pix":
             pipe = StableDiffusionInstructPix2PixPipeline.from_pretrained(
                 model, torch_dtype=torch.float16, safety_checker=None
+            ).to(device)
+            pipe.scheduler = EulerAncestralDiscreteScheduler.from_config(
+                pipe.scheduler.config
             )
+        elif model == "lambdalabs/sd-image-variations-diffusers":
+            pipe = StableDiffusionImageVariationPipeline.from_pretrained(
+                model,
+                revision="v2.0",
+            ).to(device)
         else:
             raise Exception("Unsupported model selected!")
-
-        pipe = pipe.to("cuda" if torch.cuda.is_available() else "cpu")
-        pipe.scheduler = EulerAncestralDiscreteScheduler.from_config(
-            pipe.scheduler.config
-        )
 
         # iterate over each frame of the video
         print("Processing frames...")
@@ -135,17 +168,25 @@ async def post_generate(
             pil_frame = Image.fromarray(cv.cvtColor(frame, cv.COLOR_BGR2RGB))
 
             # apply model to frame
-            if model == SUPPORTED_MODELS[0]:
+            if model == "LiheYoung/depth-anything-small-hf":
                 result = pipe(pil_frame)["depth"]
-            elif model == SUPPORTED_MODELS[1]:
-                result = pipe(
-                    prompt,
-                    image=pil_frame,
-                    num_inference_steps=10,
-                    image_guidance_scale=guidance,
-                ).images[0]
+            elif model == "AnalogMutations/instruct-pix2pix":
+                result = (
+                    pipe(
+                        prompt,
+                        image=pil_frame,
+                        num_inference_steps=num_inference_steps,
+                        image_guidance_scale=guidance,
+                    )
+                    .images[0]
+                    .convert("RGB")
+                )
+            elif model == "lambdalabs/sd-image-variations-diffusers":
+                result = pipe(pil_frame, guidance_scale=guidance)["images"][0].convert(
+                    "RGB"
+                )
 
-            cv_result = np.array(result.convert("RGB"))
+            cv_result = np.array(cv.cvtColor(np.array(result), cv.COLOR_RGB2BGR))
 
             # save result to videofile
             output_writer.write(cv_result)
@@ -154,15 +195,15 @@ async def post_generate(
         cv_video.release()
         output_writer.release()
 
-        file_size = os.path.getsize(temp_output.name)
         return StreamingResponse(
-            temp_video_to_bytes(temp_output.name, delete_after=False),
-            media_type="video/x-msvideo",
+            temp_video_to_bytes(temp_output.name, delete_after=True),
+            media_type=CODECC_MEDIATYPE,
         )
+
     except KeyboardInterrupt:
         print("Cancelling!")
         raise HTTPException(status_code=500, detail="Server aborted operation")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     finally:
-        os.remove(temp_upload.name)
+        await remove_file(temp_upload.name)

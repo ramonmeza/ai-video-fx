@@ -12,6 +12,7 @@ There's a lot more to do. I am being lazy about using issues, but feel free to a
     - potentially work with `pyinstaller` again
     - build to github release
     - build to pypi? (will this even work? need to figure out how to package site data along with module, then I bet it would)
+- In `app/page.js` where the video result is shown, the MIME type is hardcoded, as opposed to `api/api.py` where it is a constant that is easily changed. If you want to change the output format, you will need to modify `page.js`. I should add these details to the header of the `StreamingResponse` and pull them from the UI instead of hardcoding it.
 
 ## About
 I wanted to learn about using AI models and found a few depth models that produce interesting results when given an image. I wanted to create an application that would make it simple for me to upload a video to be processed through these AI models and the result to be saved.
