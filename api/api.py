@@ -27,7 +27,7 @@ SUPPORTED_MODELS = [
     # "prs-eth/marigold-depth-v1-0",
 ]
 
-CODECC: str = "X264"
+CODECC: str = "mp4v"
 CODECC_SUFFIX: str = ".mp4"
 CODECC_MEDIATYPE: str = "video/mp4"
 
@@ -60,14 +60,8 @@ def temp_video_to_bytes(vid_file: str, delete_after: bool = True):
 
 
 async def remove_file(file_path):
-    while True:
-        try:
-            await asyncio.sleep(5)
-            os.remove(file_path)
-            print(f"File {file_path} has been deleted.")
-            break
-        except:
-            pass
+    os.remove(file_path)
+    print(f"File {file_path} has been deleted.")
 
 
 def get_frames(video: cv.VideoCapture):
@@ -171,22 +165,17 @@ async def post_generate(
             if model == "LiheYoung/depth-anything-small-hf":
                 result = pipe(pil_frame)["depth"]
             elif model == "AnalogMutations/instruct-pix2pix":
-                result = (
-                    pipe(
-                        prompt,
-                        image=pil_frame,
-                        num_inference_steps=num_inference_steps,
-                        image_guidance_scale=guidance,
-                    )
-                    .images[0]
-                    .convert("RGB")
-                )
+                result = pipe(
+                    prompt,
+                    image=pil_frame,
+                    num_inference_steps=num_inference_steps,
+                    image_guidance_scale=guidance,
+                ).images[0]
             elif model == "lambdalabs/sd-image-variations-diffusers":
-                result = pipe(pil_frame, guidance_scale=guidance)["images"][0].convert(
-                    "RGB"
-                )
+                result = pipe(pil_frame, guidance_scale=guidance)["images"][0]
 
-            cv_result = np.array(cv.cvtColor(np.array(result), cv.COLOR_RGB2BGR))
+            # why isnt this and writing working?
+            cv_result = np.array(result.convert("RGB"))
 
             # save result to videofile
             output_writer.write(cv_result)
